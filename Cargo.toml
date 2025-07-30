@@ -1,0 +1,20 @@
+[package]
+name = "phala-zkverify"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hex = "0.4"
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1", features = ["v4", "serde"] }
+anyhow = "1.0"
+sp1-sdk = "=5.0.8"
+dcap-rs = { git = "https://github.com/automata-network/dcap-rs.git" }
+dcap-sp1-cli = { git="https://github.com/automata-network/automata-dcap-zkvm-cli", rev="268b4115ad592d46c02f4ef7d49a6bae066d1592" }
+sp1-zkv-sdk = { git="https://github.com/zkVerify/sp1-verifier" }
+bincode = { version = "2", features = ["serde"] }
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+dotenv = "0.15"

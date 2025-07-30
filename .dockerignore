@@ -1,0 +1,7 @@
+# Ignore Git history
+.git
+.gitignore
+.env
+
+# Ignore build artifacts and dependencies, as they will be handled inside the container
+/target
