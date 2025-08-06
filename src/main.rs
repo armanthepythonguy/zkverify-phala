@@ -9,6 +9,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sp1_zkv_sdk::{SP1ZkvProofWithPublicValues, ZkvProver};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,6 +17,8 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 use sp1_sdk::{utils, HashableKey, ProverClient, SP1Stdin};
+use tower_http::cors::{Any, CorsLayer};
+
 
 pub const DCAP_ELF: &[u8] = include_bytes!("../dcap-sp1-guest-program-elf");
 
@@ -32,8 +35,8 @@ struct Output{
 #[serde(tag = "status", content = "data")]
 enum TaskStatus {
     Processing,
-    Verifying { proof: Output },
-    Completed { proof: Output, tx_hash: String },
+    Verifying { },
+    Completed { tx_hash: String },
     Failed { error: String },
 }
 
@@ -70,14 +73,17 @@ async fn main() {
         proof_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
+    let cors = CorsLayer::very_permissive();
+
     // Define the application routes.
     let app = Router::new()
         .route("/prove", post(prove_handler))
         .route("/status/:task_id", get(status_handler))
-        .with_state(state); // Make the combined state available to all handlers.
+        .with_state(state) // Make the combined state available to all handlers.
+        .layer(cors); 
 
     // Start the server.
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
     println!("🚀 Server listening on {}", listener.local_addr().unwrap());
     axum::serve(listener, app).await.unwrap();
 }
@@ -88,15 +94,19 @@ async fn prove_handler(
     Json(payload): Json<ProveRequest>,
 ) -> Response{
 
+    let mut hasher = Sha256::new();
+    hasher.update(&payload.quote.as_bytes());
+    let quote_hash = hex::encode(hasher.finalize());
+
     let proof_cache_reader = state.proof_cache.read().await;
-    if let Some(cached_result) = proof_cache_reader.get(&payload.quote) {
-        println!("✅ Cache HIT for stdin: '{}'", payload.quote);
+    if let Some(cached_result) = proof_cache_reader.get(&quote_hash) {
+        println!("✅ Cache HIT for stdin: '{}'", quote_hash);
         // If it exists, return the cached result immediately with a 200 OK.
         return (StatusCode::OK, Json(cached_result.clone())).into_response();
     }
     // Drop the read lock explicitly so we can acquire a write lock later if needed.
     drop(proof_cache_reader);
-    println!("❌ Cache MISS for stdin: '{}'. Starting new task.", payload.quote);
+    println!("❌ Cache MISS for stdin: '{}'. Starting new task.", quote_hash);
 
     // --- NEW TASK LOGIC (if not in cache) ---
     // 2. If not cached, create a new task ID and spawn a background job.
@@ -104,7 +114,7 @@ async fn prove_handler(
 
     let state_clone = state.clone();
     let task_id_clone = task_id.clone();
-    let quote_clone = payload.quote.clone();
+    let quote_clone = quote_hash.clone();
 
     tokio::spawn(async move{
 
@@ -113,7 +123,7 @@ async fn prove_handler(
             db_writer.insert(task_id_clone.clone(), TaskStatus::Processing);
         }
 
-        let formatted_quote = tee_utils::remove_prefix_if_found(&quote_clone);
+        let formatted_quote = tee_utils::remove_prefix_if_found(&payload.quote);
         let quote_bytes = hex::decode(formatted_quote).expect("Failed to decode hex string");
         let input = tee_utils::get_sp1_input(quote_bytes).await.unwrap();
 
@@ -159,12 +169,12 @@ async fn prove_handler(
         println!("➡️ Task {} completed proving, now verifying.", task_id_clone);
         {
             let mut db_writer = state_clone.task_db.write().await;
-            db_writer.insert(task_id_clone.clone(), TaskStatus::Verifying { proof: proof_result.clone() });
+            db_writer.insert(task_id_clone.clone(), TaskStatus::Verifying { });
         }
 
         let verification_result = zkverify_utils::verify_proof(proof_result.clone()).await;
         let final_status = match verification_result{
-            Ok(tx_hash) => TaskStatus::Completed { proof: proof_result, tx_hash },
+            Ok(tx_hash) => TaskStatus::Completed { tx_hash },
             Err(e) => TaskStatus::Failed { error: e.to_string() },
         };
 
